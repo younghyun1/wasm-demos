@@ -1,0 +1,39 @@
+[package]
+name = "ray_tracer"
+version = "0.1.0"
+edition = "2024"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2.108"
+wasm-bindgen-futures = "0.4.55"
+js-sys = "0.3.76"
+bytemuck = { version = "1.24.0", features = ["derive"] }
+wgpu = { version = "28.0.0", features = ["webgl"] }
+web-sys = { version = "0.3.85", features = [
+    "Window",
+    "Document",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "Element",
+    "HtmlElement",
+    "CssStyleDeclaration",
+    "MouseEvent",
+    "Performance",
+    "ImageData",
+    "console",
+] }
+
+[profile.release]
+opt-level = "z"
+codegen-units = 1
+lto = true
+strip = true
+panic = "abort"
+debug = false
+incremental = false
