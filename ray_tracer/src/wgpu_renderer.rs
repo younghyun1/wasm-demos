@@ -10,8 +10,8 @@ const MAX_BOUNCE: u32 = 10;
 const FOV_DEG: f32 = 62.0;
 const CAMERA_DIST: f32 = 9.5;
 const CAMERA_LENS_RADIUS: f32 = 0.035;
-const TRACE_BUDGET_MS: f64 = 8.0;
 const MAX_TRACE_PASSES_PER_FRAME: u32 = 24;
+const RENDER_SCALE_MAX: f64 = 1.5;
 
 const TRACE_WGSL: &str = r#"
 struct Uniforms {
@@ -36,6 +36,18 @@ const MAT_DIFFUSE: u32 = 0u;
 const MAT_METAL: u32 = 1u;
 const MAT_DIELECTRIC: u32 = 2u;
 const MAT_EMISSIVE: u32 = 3u;
+
+const PI: f32 = 3.14159265359;
+const FIREFLY_CLAMP: f32 = 16.0;
+const ROOM_HALF_W: f32 = 4.2;
+const ROOM_HALF_D: f32 = 3.0;
+const ROOM_H: f32 = 5.6;
+const LIGHT_MIN: vec3<f32> = vec3<f32>(-1.3, ROOM_H - 0.02, -0.9);
+const LIGHT_U: vec3<f32> = vec3<f32>(2.6, 0.0, 0.0);
+const LIGHT_V: vec3<f32> = vec3<f32>(0.0, 0.0, 1.8);
+const LIGHT_NRM: vec3<f32> = vec3<f32>(0.0, -1.0, 0.0);
+const LIGHT_AREA: f32 = 4.68;
+const LIGHT_EMIT: vec3<f32> = vec3<f32>(18.0, 16.2, 12.6);
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -148,290 +160,119 @@ fn hit_quad(corner: vec3<f32>, u_vec: vec3<f32>, v_vec: vec3<f32>, ro: vec3<f32>
     return HitGeom(true, t, norm, front);
 }
 
+fn hit_box(bmin: vec3<f32>, bmax: vec3<f32>, ro: vec3<f32>, rd: vec3<f32>, t_max: f32) -> HitGeom {
+    let inv = vec3<f32>(1.0) / rd;
+    let t0 = (bmin - ro) * inv;
+    let t1 = (bmax - ro) * inv;
+    let tsmall = min(t0, t1);
+    let tbig = max(t0, t1);
+    let tn = max(max(tsmall.x, tsmall.y), tsmall.z);
+    let tf = min(min(tbig.x, tbig.y), tbig.z);
+    if (tn > tf || tf < EPS) {
+        return HitGeom(false, 0.0, vec3<f32>(0.0), true);
+    }
+    var t = tn;
+    var on_far = false;
+    if (t < EPS) {
+        t = tf;
+        on_far = true;
+    }
+    if (t < EPS || t > t_max) {
+        return HitGeom(false, 0.0, vec3<f32>(0.0), true);
+    }
+    var n = vec3<f32>(0.0);
+    if (!on_far) {
+        if (tn == tsmall.x) {
+            n = vec3<f32>(-sign(rd.x), 0.0, 0.0);
+        } else if (tn == tsmall.y) {
+            n = vec3<f32>(0.0, -sign(rd.y), 0.0);
+        } else {
+            n = vec3<f32>(0.0, 0.0, -sign(rd.z));
+        }
+    } else {
+        if (tf == tbig.x) {
+            n = vec3<f32>(sign(rd.x), 0.0, 0.0);
+        } else if (tf == tbig.y) {
+            n = vec3<f32>(0.0, sign(rd.y), 0.0);
+        } else {
+            n = vec3<f32>(0.0, 0.0, sign(rd.z));
+        }
+    }
+    let front = dot(rd, n) < 0.0;
+    let nn = select(-n, n, front);
+    return HitGeom(true, t, nn, front);
+}
+
+fn checker(p: vec3<f32>) -> vec3<f32> {
+    let ix = i32(floor(p.x * 0.7));
+    let iz = i32(floor(p.z * 0.7));
+    let parity = (ix + iz) & 1;
+    return select(vec3<f32>(0.18, 0.19, 0.22), vec3<f32>(0.82, 0.80, 0.76), parity == 0);
+}
+
 fn trace_scene(ro: vec3<f32>, rd: vec3<f32>) -> Hit {
     var closest = INF;
     var result = Hit(false, 0.0, vec3<f32>(0.0), vec3<f32>(0.0), 0u, true);
-    let half_w = 4.2;
-    let half_d = 3.0;
-    let room_h = 5.6;
 
     // Room shell
-    var h = hit_quad(
-        vec3<f32>(-half_w, 0.0, -half_d),
-        vec3<f32>(2.0 * half_w, 0.0, 0.0),
-        vec3<f32>(0.0, 0.0, 2.0 * half_d),
-        ro,
-        rd,
-        closest,
-    );
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 9u, h.front);
-    }
-
-    h = hit_quad(
-        vec3<f32>(-half_w, room_h, -half_d),
-        vec3<f32>(2.0 * half_w, 0.0, 0.0),
-        vec3<f32>(0.0, 0.0, 2.0 * half_d),
-        ro,
-        rd,
-        closest,
-    );
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 10u, h.front);
-    }
-
-    h = hit_quad(
-        vec3<f32>(-half_w, 0.0, -half_d),
-        vec3<f32>(2.0 * half_w, 0.0, 0.0),
-        vec3<f32>(0.0, room_h, 0.0),
-        ro,
-        rd,
-        closest,
-    );
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 11u, h.front);
-    }
-
-    h = hit_quad(
-        vec3<f32>(-half_w, 0.0, -half_d),
-        vec3<f32>(0.0, 0.0, 2.0 * half_d),
-        vec3<f32>(0.0, room_h, 0.0),
-        ro,
-        rd,
-        closest,
-    );
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 1u, h.front);
-    }
-
-    h = hit_quad(
-        vec3<f32>(half_w, 0.0, -half_d),
-        vec3<f32>(0.0, 0.0, 2.0 * half_d),
-        vec3<f32>(0.0, room_h, 0.0),
-        ro,
-        rd,
-        closest,
-    );
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 2u, h.front);
-    }
+    var h = hit_quad(vec3<f32>(-ROOM_HALF_W, 0.0, -ROOM_HALF_D), vec3<f32>(2.0 * ROOM_HALF_W, 0.0, 0.0), vec3<f32>(0.0, 0.0, 2.0 * ROOM_HALF_D), ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 9u, h.front); }
+    h = hit_quad(vec3<f32>(-ROOM_HALF_W, ROOM_H, -ROOM_HALF_D), vec3<f32>(2.0 * ROOM_HALF_W, 0.0, 0.0), vec3<f32>(0.0, 0.0, 2.0 * ROOM_HALF_D), ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 10u, h.front); }
+    h = hit_quad(vec3<f32>(-ROOM_HALF_W, 0.0, -ROOM_HALF_D), vec3<f32>(2.0 * ROOM_HALF_W, 0.0, 0.0), vec3<f32>(0.0, ROOM_H, 0.0), ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 11u, h.front); }
+    h = hit_quad(vec3<f32>(-ROOM_HALF_W, 0.0, -ROOM_HALF_D), vec3<f32>(0.0, 0.0, 2.0 * ROOM_HALF_D), vec3<f32>(0.0, ROOM_H, 0.0), ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 1u, h.front); }
+    h = hit_quad(vec3<f32>(ROOM_HALF_W, 0.0, -ROOM_HALF_D), vec3<f32>(0.0, 0.0, 2.0 * ROOM_HALF_D), vec3<f32>(0.0, ROOM_H, 0.0), ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 2u, h.front); }
 
     // Area light
-    h = hit_quad(
-        vec3<f32>(-1.3, room_h - 0.02, -0.9),
-        vec3<f32>(2.6, 0.0, 0.0),
-        vec3<f32>(0.0, 0.0, 1.8),
-        ro,
-        rd,
-        closest,
-    );
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 3u, h.front);
-    }
+    h = hit_quad(LIGHT_MIN, LIGHT_U, LIGHT_V, ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 3u, h.front); }
 
-    // Back-wall color panels
-    h = hit_quad(
-        vec3<f32>(-3.6, 1.0, -half_d + 0.02),
-        vec3<f32>(2.1, 0.0, 0.0),
-        vec3<f32>(0.0, 3.0, 0.0),
-        ro,
-        rd,
-        closest,
-    );
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 12u, h.front);
-    }
+    // Spheres
+    h = hit_sphere(vec3<f32>(1.5, 1.0, 0.2), 1.0, ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 5u, h.front); }
+    h = hit_sphere(vec3<f32>(-1.8, 0.8, -0.4), 0.8, ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 4u, h.front); }
+    h = hit_sphere(vec3<f32>(2.7, 0.42, -1.6), 0.42, ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 8u, h.front); }
+    h = hit_sphere(vec3<f32>(-1.5, 0.55, 1.5), 0.55, ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 6u, h.front); }
+    h = hit_sphere(vec3<f32>(0.2, 0.35, 1.9), 0.35, ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 7u, h.front); }
+    h = hit_sphere(vec3<f32>(-3.0, 0.3, 1.4), 0.3, ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 16u, h.front); }
 
-    h = hit_quad(
-        vec3<f32>(1.4, 0.8, -half_d + 0.02),
-        vec3<f32>(2.0, 0.0, 0.0),
-        vec3<f32>(0.0, 2.6, 0.0),
-        ro,
-        rd,
-        closest,
-    );
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 13u, h.front);
-    }
-
-    // Center pedestal (box built from quads)
-    h = hit_quad(
-        vec3<f32>(-0.8, 0.0, -1.0),
-        vec3<f32>(1.6, 0.0, 0.0),
-        vec3<f32>(0.0, 1.4, 0.0),
-        ro,
-        rd,
-        closest,
-    );
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 14u, h.front);
-    }
-
-    h = hit_quad(
-        vec3<f32>(-0.8, 0.0, 0.1),
-        vec3<f32>(1.6, 0.0, 0.0),
-        vec3<f32>(0.0, 1.4, 0.0),
-        ro,
-        rd,
-        closest,
-    );
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 14u, h.front);
-    }
-
-    h = hit_quad(
-        vec3<f32>(-0.8, 0.0, -1.0),
-        vec3<f32>(0.0, 0.0, 1.1),
-        vec3<f32>(0.0, 1.4, 0.0),
-        ro,
-        rd,
-        closest,
-    );
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 14u, h.front);
-    }
-
-    h = hit_quad(
-        vec3<f32>(0.8, 0.0, -1.0),
-        vec3<f32>(0.0, 0.0, 1.1),
-        vec3<f32>(0.0, 1.4, 0.0),
-        ro,
-        rd,
-        closest,
-    );
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 14u, h.front);
-    }
-
-    h = hit_quad(
-        vec3<f32>(-0.8, 1.4, -1.0),
-        vec3<f32>(1.6, 0.0, 0.0),
-        vec3<f32>(0.0, 0.0, 1.1),
-        ro,
-        rd,
-        closest,
-    );
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 15u, h.front);
-    }
-
-    // Objects
-    h = hit_sphere(vec3<f32>(-1.7, 0.55, 1.25), 0.55, ro, rd, closest);
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 6u, h.front);
-    }
-
-    h = hit_sphere(vec3<f32>(-0.65, 0.35, 0.35), 0.35, ro, rd, closest);
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 7u, h.front);
-    }
-
-    h = hit_sphere(vec3<f32>(0.65, 0.5, 1.6), 0.5, ro, rd, closest);
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 14u, h.front);
-    }
-
-    h = hit_sphere(vec3<f32>(1.65, 0.95, 0.35), 0.95, ro, rd, closest);
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 5u, h.front);
-    }
-
-    h = hit_sphere(vec3<f32>(2.35, 0.35, -0.95), 0.35, ro, rd, closest);
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 8u, h.front);
-    }
-
-    h = hit_sphere(vec3<f32>(-0.15, 1.95, 0.1), 0.3, ro, rd, closest);
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 4u, h.front);
-    }
-
-    h = hit_sphere(vec3<f32>(-2.45, 0.28, -0.15), 0.28, ro, rd, closest);
-    if (h.hit) {
-        closest = h.t;
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 15u, h.front);
-    }
-
-    h = hit_sphere(vec3<f32>(0.2, 0.22, -1.6), 0.22, ro, rd, closest);
-    if (h.hit) {
-        result = Hit(true, h.t, ro + rd * h.t, h.n, 12u, h.front);
-    }
+    // Boxes (metal pillar + diffuse riser)
+    h = hit_box(vec3<f32>(-3.2, 0.0, -2.4), vec3<f32>(-2.4, 2.2, -1.6), ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 14u, h.front); }
+    h = hit_box(vec3<f32>(2.0, 0.0, 1.4), vec3<f32>(2.8, 0.5, 2.2), ro, rd, closest);
+    if (h.hit) { closest = h.t; result = Hit(true, h.t, ro + rd * h.t, h.n, 15u, h.front); }
 
     return result;
 }
 
 fn get_material(mat_id: u32) -> Material {
     switch mat_id {
-        case 0u: {
-            return Material(MAT_DIFFUSE, vec3<f32>(0.73), 0.0);
-        }
-        case 1u: {
-            return Material(MAT_DIFFUSE, vec3<f32>(0.82, 0.28, 0.34), 0.0);
-        }
-        case 2u: {
-            return Material(MAT_DIFFUSE, vec3<f32>(0.16, 0.52, 0.72), 0.0);
-        }
-        case 3u: {
-            return Material(MAT_EMISSIVE, vec3<f32>(1.0, 0.92, 0.75), 15.0);
-        }
-        case 4u: {
-            return Material(MAT_METAL, vec3<f32>(0.9, 0.8, 0.6), 0.05);
-        }
-        case 5u: {
-            return Material(MAT_DIELECTRIC, vec3<f32>(1.0), 1.5);
-        }
-        case 6u: {
-            return Material(MAT_DIFFUSE, vec3<f32>(0.15, 0.25, 0.75), 0.0);
-        }
-        case 7u: {
-            return Material(MAT_DIFFUSE, vec3<f32>(0.72, 0.55, 0.22), 0.0);
-        }
-        case 8u: {
-            return Material(MAT_METAL, vec3<f32>(0.86, 0.88, 0.95), 0.14);
-        }
-        case 9u: {
-            return Material(MAT_DIFFUSE, vec3<f32>(0.76, 0.68, 0.56), 0.0);
-        }
-        case 10u: {
-            return Material(MAT_DIFFUSE, vec3<f32>(0.62, 0.66, 0.78), 0.0);
-        }
-        case 11u: {
-            return Material(MAT_DIFFUSE, vec3<f32>(0.30, 0.38, 0.62), 0.0);
-        }
-        case 12u: {
-            return Material(MAT_DIFFUSE, vec3<f32>(0.74, 0.34, 0.62), 0.0);
-        }
-        case 13u: {
-            return Material(MAT_DIFFUSE, vec3<f32>(0.80, 0.71, 0.28), 0.0);
-        }
-        case 14u: {
-            return Material(MAT_METAL, vec3<f32>(0.78, 0.83, 0.92), 0.07);
-        }
-        case 15u: {
-            return Material(MAT_DIFFUSE, vec3<f32>(0.76, 0.49, 0.22), 0.0);
-        }
-        default: {
-            return Material(MAT_DIFFUSE, vec3<f32>(0.5), 0.0);
-        }
+        case 0u: { return Material(MAT_DIFFUSE, vec3<f32>(0.73), 0.0); }
+        case 1u: { return Material(MAT_DIFFUSE, vec3<f32>(0.63, 0.26, 0.30), 0.0); }
+        case 2u: { return Material(MAT_DIFFUSE, vec3<f32>(0.20, 0.52, 0.50), 0.0); }
+        case 3u: { return Material(MAT_EMISSIVE, vec3<f32>(1.0, 0.9, 0.7), 18.0); }
+        case 4u: { return Material(MAT_METAL, vec3<f32>(0.95, 0.78, 0.45), 0.02); }
+        case 5u: { return Material(MAT_DIELECTRIC, vec3<f32>(1.0), 1.5); }
+        case 6u: { return Material(MAT_DIFFUSE, vec3<f32>(0.16, 0.28, 0.72), 0.0); }
+        case 7u: { return Material(MAT_DIFFUSE, vec3<f32>(0.72, 0.55, 0.22), 0.0); }
+        case 8u: { return Material(MAT_METAL, vec3<f32>(0.86, 0.88, 0.95), 0.14); }
+        case 9u: { return Material(MAT_DIFFUSE, vec3<f32>(0.5), 0.0); }
+        case 10u: { return Material(MAT_DIFFUSE, vec3<f32>(0.78, 0.78, 0.80), 0.0); }
+        case 11u: { return Material(MAT_DIFFUSE, vec3<f32>(0.70, 0.72, 0.75), 0.0); }
+        case 12u: { return Material(MAT_DIFFUSE, vec3<f32>(0.74, 0.34, 0.62), 0.0); }
+        case 13u: { return Material(MAT_DIFFUSE, vec3<f32>(0.80, 0.71, 0.28), 0.0); }
+        case 14u: { return Material(MAT_METAL, vec3<f32>(0.80, 0.84, 0.92), 0.04); }
+        case 15u: { return Material(MAT_DIFFUSE, vec3<f32>(0.80, 0.45, 0.20), 0.0); }
+        case 16u: { return Material(MAT_EMISSIVE, vec3<f32>(1.0, 0.55, 0.22), 6.0); }
+        default: { return Material(MAT_DIFFUSE, vec3<f32>(0.5), 0.0); }
     }
 }
 
@@ -441,11 +282,31 @@ fn schlick(cosine: f32, ior: f32) -> f32 {
     return r0 + (1.0 - r0) * pow(1.0 - cosine, 5.0);
 }
 
+fn sample_light(p: vec3<f32>, n: vec3<f32>, state: ptr<function, u32>) -> vec3<f32> {
+    let q = LIGHT_MIN + LIGHT_U * rand1(state) + LIGHT_V * rand1(state);
+    let to = q - p;
+    let dist2 = dot(to, to);
+    let dist = sqrt(dist2);
+    let wi = to / dist;
+    let cos_s = dot(n, wi);
+    let cos_l = dot(LIGHT_NRM, -wi);
+    if (cos_s <= 0.0 || cos_l <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let shadow = trace_scene(p + n * EPS, wi);
+    if (!shadow.hit || shadow.mat_id != 3u) {
+        return vec3<f32>(0.0);
+    }
+    let g = (cos_s * cos_l) / dist2;
+    return LIGHT_EMIT * (g * LIGHT_AREA / PI);
+}
+
 fn path_trace(ro0: vec3<f32>, rd0: vec3<f32>, state: ptr<function, u32>) -> vec3<f32> {
     var ro = ro0;
     var rd = rd0;
     var throughput = vec3<f32>(1.0);
     var radiance = vec3<f32>(0.0);
+    var specular = true;
 
     for (var bounce = 0u; bounce < MAX_BOUNCE; bounce = bounce + 1u) {
         let hit = trace_scene(ro, rd);
@@ -455,14 +316,24 @@ fn path_trace(ro0: vec3<f32>, rd0: vec3<f32>, state: ptr<function, u32>) -> vec3
 
         let mat = get_material(hit.mat_id);
         if (mat.kind == MAT_EMISSIVE) {
-            radiance = radiance + throughput * mat.albedo * mat.param;
+            // Main light (id 3) is handled by NEE on diffuse paths; only add it
+            // directly when reached via a specular/camera ray to avoid double counting.
+            if (specular || hit.mat_id != 3u) {
+                radiance = radiance + throughput * mat.albedo * mat.param;
+            }
             break;
         }
 
         if (mat.kind == MAT_DIFFUSE) {
+            var albedo = mat.albedo;
+            if (hit.mat_id == 9u) {
+                albedo = checker(hit.p);
+            }
+            radiance = radiance + throughput * albedo * sample_light(hit.p, hit.n, state);
             ro = hit.p + hit.n * EPS;
             rd = sample_cos_hemisphere(hit.n, state);
-            throughput = throughput * mat.albedo;
+            throughput = throughput * albedo;
+            specular = false;
         } else if (mat.kind == MAT_METAL) {
             let reflected = reflect(normalize(rd), hit.n);
             ro = hit.p + hit.n * EPS;
@@ -471,6 +342,7 @@ fn path_trace(ro0: vec3<f32>, rd0: vec3<f32>, state: ptr<function, u32>) -> vec3
                 break;
             }
             throughput = throughput * mat.albedo;
+            specular = true;
         } else if (mat.kind == MAT_DIELECTRIC) {
             let ratio = select(mat.param, 1.0 / mat.param, hit.front);
             let unit = normalize(rd);
@@ -484,6 +356,7 @@ fn path_trace(ro0: vec3<f32>, rd0: vec3<f32>, state: ptr<function, u32>) -> vec3
                 rd = refract(unit, hit.n, ratio);
             }
             ro = hit.p + rd * EPS;
+            specular = true;
         }
 
         if (bounce > 4u) {
@@ -517,6 +390,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let px = vec2<u32>(u32(in.pos.x), u32(in.pos.y));
     var rng_state = px.x ^ (px.y * 4093u) ^ (u.seed_data.z * 26699u) ^ u.seed_data.x;
+    rng_state = pcg_hash(&rng_state);
 
     let jitter = vec2<f32>(rand1(&rng_state), rand1(&rng_state)) - vec2<f32>(0.5);
     let pixel = in.pos.xy + jitter;
@@ -530,7 +404,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let origin = u.cam_eye.xyz + u.cam_right.xyz * lens.x + u.cam_up.xyz * lens.y;
     dir = normalize(focus_point - origin);
 
-    let sample_color = path_trace(origin, dir, &rng_state);
+    var sample_color = path_trace(origin, dir, &rng_state);
+    sample_color = min(sample_color, vec3<f32>(FIREFLY_CLAMP));
     let prev = textureLoad(prev_accum, vec2<i32>(i32(px.x), i32(px.y)), 0).rgb;
     let n = f32(u.seed_data.y);
     let accum = (prev * n + sample_color) / (n + 1.0);
@@ -662,6 +537,9 @@ pub struct GpuState {
     last_mouse: (f64, f64),
     cam_yaw: f32,
     cam_pitch: f32,
+
+    last_frame_start: f64,
+    adaptive_passes: u32,
 
     stats: Stats,
 }
@@ -860,8 +738,9 @@ impl GpuState {
             .map_err(|_| "innerHeight failed".to_string())?
             .as_f64()
             .ok_or_else(|| "innerHeight missing".to_string())?;
-        let width = (ww * dpr).max(1.0) as u32;
-        let height = (wh * dpr).max(1.0) as u32;
+        let scale = dpr.min(RENDER_SCALE_MAX);
+        let width = (ww * scale).max(1.0) as u32;
+        let height = (wh * scale).max(1.0) as u32;
         canvas.set_width(width);
         canvas.set_height(height);
 
@@ -1104,6 +983,8 @@ impl GpuState {
             last_mouse: (0.0, 0.0),
             cam_yaw: 0.0,
             cam_pitch: 0.15,
+            last_frame_start: 0.0,
+            adaptive_passes: 4,
             stats: Stats::default(),
         };
 
@@ -1276,8 +1157,9 @@ impl GpuState {
             return;
         };
 
-        let new_w = (ww * dpr).max(1.0) as u32;
-        let new_h = (wh * dpr).max(1.0) as u32;
+        let scale = dpr.min(RENDER_SCALE_MAX);
+        let new_w = (ww * scale).max(1.0) as u32;
+        let new_h = (wh * scale).max(1.0) as u32;
         if new_w == self.surface_config.width && new_h == self.surface_config.height {
             return;
         }
@@ -1448,7 +1330,7 @@ impl GpuState {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -1468,16 +1350,33 @@ impl GpuState {
 
     fn draw_frame(&mut self) {
         self.resize_if_needed();
-        let frame_start = perf_now();
 
+        let now = perf_now();
+        let frame_delta = if self.last_frame_start > 0.0 {
+            now - self.last_frame_start
+        } else {
+            16.0
+        };
+        self.last_frame_start = now;
+
+        // GPU work is async on WebGL2, so per-pass CPU timing is meaningless.
+        // Adapt the pass count from real inter-frame wall time to hold ~60fps.
+        if frame_delta > 18.0 && self.adaptive_passes > 1 {
+            self.adaptive_passes -= 1;
+        } else if frame_delta < 14.0 && self.adaptive_passes < MAX_TRACE_PASSES_PER_FRAME {
+            self.adaptive_passes += 1;
+        }
+        // One pass per frame while dragging keeps camera latency low.
+        let target_passes = if self.mouse_down {
+            1
+        } else {
+            self.adaptive_passes
+        };
+
+        let frame_start = now;
         let mut passes_this_frame = 0u32;
-        let mut trace_budget_used = 0.0;
-        while passes_this_frame < MAX_TRACE_PASSES_PER_FRAME {
-            if passes_this_frame > 0 && trace_budget_used >= TRACE_BUDGET_MS {
-                break;
-            }
+        while passes_this_frame < target_passes {
             let pass_ms = self.trace_one_pass();
-            trace_budget_used += pass_ms;
             passes_this_frame = passes_this_frame.wrapping_add(1);
             self.update_stats(pass_ms);
         }

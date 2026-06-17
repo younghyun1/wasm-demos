@@ -200,6 +200,7 @@ const INF: f32 = 1e20;
 const MAX_BOUNCE: u32 = 10;
 const FRAME_BUDGET_MS: f64 = 12.0;
 const PIXEL_BATCH: usize = 256;
+const FIREFLY_CLAMP: f32 = 16.0;
 
 // ---- Materials ----
 // 0=diffuse, 1=metal, 2=dielectric, 3=emissive
@@ -215,47 +216,87 @@ fn get_mat(id: u8) -> Mat {
             kind: 0,
             albedo: V3::new(0.73, 0.73, 0.73),
             param: 0.0,
-        }, // white
+        },
         1 => Mat {
             kind: 0,
-            albedo: V3::new(0.65, 0.05, 0.05),
+            albedo: V3::new(0.63, 0.26, 0.30),
             param: 0.0,
-        }, // red
+        },
         2 => Mat {
             kind: 0,
-            albedo: V3::new(0.12, 0.45, 0.15),
+            albedo: V3::new(0.20, 0.52, 0.50),
             param: 0.0,
-        }, // green
+        },
         3 => Mat {
             kind: 3,
-            albedo: V3::new(1.0, 0.92, 0.75),
-            param: 15.0,
-        }, // light
+            albedo: V3::new(1.0, 0.9, 0.7),
+            param: 18.0,
+        },
         4 => Mat {
             kind: 1,
-            albedo: V3::new(0.9, 0.8, 0.6),
-            param: 0.05,
-        }, // metal
+            albedo: V3::new(0.95, 0.78, 0.45),
+            param: 0.02,
+        },
         5 => Mat {
             kind: 2,
             albedo: V3::splat(1.0),
             param: 1.5,
-        }, // glass
+        },
         6 => Mat {
             kind: 0,
-            albedo: V3::new(0.15, 0.25, 0.75),
+            albedo: V3::new(0.16, 0.28, 0.72),
             param: 0.0,
-        }, // blue
+        },
         7 => Mat {
             kind: 0,
             albedo: V3::new(0.72, 0.55, 0.22),
             param: 0.0,
-        }, // warm diffuse
+        },
         8 => Mat {
             kind: 1,
             albedo: V3::new(0.86, 0.88, 0.95),
             param: 0.14,
-        }, // rough silver
+        },
+        9 => Mat {
+            kind: 0,
+            albedo: V3::splat(0.5),
+            param: 0.0,
+        },
+        10 => Mat {
+            kind: 0,
+            albedo: V3::new(0.78, 0.78, 0.80),
+            param: 0.0,
+        },
+        11 => Mat {
+            kind: 0,
+            albedo: V3::new(0.70, 0.72, 0.75),
+            param: 0.0,
+        },
+        12 => Mat {
+            kind: 0,
+            albedo: V3::new(0.74, 0.34, 0.62),
+            param: 0.0,
+        },
+        13 => Mat {
+            kind: 0,
+            albedo: V3::new(0.80, 0.71, 0.28),
+            param: 0.0,
+        },
+        14 => Mat {
+            kind: 1,
+            albedo: V3::new(0.80, 0.84, 0.92),
+            param: 0.04,
+        },
+        15 => Mat {
+            kind: 0,
+            albedo: V3::new(0.80, 0.45, 0.20),
+            param: 0.0,
+        },
+        16 => Mat {
+            kind: 3,
+            albedo: V3::new(1.0, 0.55, 0.22),
+            param: 6.0,
+        },
         _ => Mat {
             kind: 0,
             albedo: V3::splat(0.5),
@@ -317,7 +358,9 @@ fn hit_quad(corner: V3, u: V3, v: V3, ray: &Ray, t_max: f32) -> Option<(f32, V3,
 fn trace_scene(ray: &Ray) -> Option<Hit> {
     let mut closest = INF;
     let mut result: Option<Hit> = None;
-    let s: f32 = 2.75;
+    const HW: f32 = 4.2;
+    const HD: f32 = 3.0;
+    const RH: f32 = 5.6;
 
     macro_rules! check {
         ($test:expr, $mat:expr) => {
@@ -336,93 +379,165 @@ fn trace_scene(ray: &Ray) -> Option<Hit> {
         };
     }
 
-    // Floor
+    // Room shell
     check!(
         hit_quad(
-            V3::new(-s, 0.0, -s),
-            V3::new(2.0 * s, 0.0, 0.0),
-            V3::new(0.0, 0.0, 2.0 * s),
+            V3::new(-HW, 0.0, -HD),
+            V3::new(2.0 * HW, 0.0, 0.0),
+            V3::new(0.0, 0.0, 2.0 * HD),
             ray,
             closest
         ),
-        0
+        9
     );
-    // Ceiling
     check!(
         hit_quad(
-            V3::new(-s, 2.0 * s, -s),
-            V3::new(2.0 * s, 0.0, 0.0),
-            V3::new(0.0, 0.0, 2.0 * s),
+            V3::new(-HW, RH, -HD),
+            V3::new(2.0 * HW, 0.0, 0.0),
+            V3::new(0.0, 0.0, 2.0 * HD),
             ray,
             closest
         ),
-        0
+        10
     );
-    // Back wall
     check!(
         hit_quad(
-            V3::new(-s, 0.0, -s),
-            V3::new(2.0 * s, 0.0, 0.0),
-            V3::new(0.0, 2.0 * s, 0.0),
+            V3::new(-HW, 0.0, -HD),
+            V3::new(2.0 * HW, 0.0, 0.0),
+            V3::new(0.0, RH, 0.0),
             ray,
             closest
         ),
-        0
+        11
     );
-    // Left wall (red)
     check!(
         hit_quad(
-            V3::new(-s, 0.0, -s),
-            V3::new(0.0, 0.0, 2.0 * s),
-            V3::new(0.0, 2.0 * s, 0.0),
+            V3::new(-HW, 0.0, -HD),
+            V3::new(0.0, 0.0, 2.0 * HD),
+            V3::new(0.0, RH, 0.0),
             ray,
             closest
         ),
         1
     );
-    // Right wall (green)
     check!(
         hit_quad(
-            V3::new(s, 0.0, -s),
-            V3::new(0.0, 0.0, 2.0 * s),
-            V3::new(0.0, 2.0 * s, 0.0),
+            V3::new(HW, 0.0, -HD),
+            V3::new(0.0, 0.0, 2.0 * HD),
+            V3::new(0.0, RH, 0.0),
             ray,
             closest
         ),
         2
     );
-    // Light
+    // Area light
     check!(
         hit_quad(
-            V3::new(-0.8, 2.0 * s - 0.01, -0.8),
-            V3::new(1.6, 0.0, 0.0),
-            V3::new(0.0, 0.0, 1.6),
+            V3::new(-1.3, RH - 0.02, -0.9),
+            V3::new(2.6, 0.0, 0.0),
+            V3::new(0.0, 0.0, 1.8),
             ray,
             closest
         ),
         3
     );
-    // Metal sphere
-    check!(hit_sphere(V3::new(-1.2, 1.0, -0.5), 1.0, ray, closest), 4);
-    // Glass sphere
-    check!(hit_sphere(V3::new(1.0, 0.8, 0.6), 0.8, ray, closest), 5);
-    // Blue diffuse sphere
-    check!(hit_sphere(V3::new(0.5, 0.45, 1.8), 0.45, ray, closest), 6);
-    // Warm center sphere
-    check!(hit_sphere(V3::new(-0.1, 0.35, 0.25), 0.35, ray, closest), 7);
-    // Small rough metal sphere
+    // Spheres
+    check!(hit_sphere(V3::new(1.5, 1.0, 0.2), 1.0, ray, closest), 5);
+    check!(hit_sphere(V3::new(-1.8, 0.8, -0.4), 0.8, ray, closest), 4);
+    check!(hit_sphere(V3::new(2.7, 0.42, -1.6), 0.42, ray, closest), 8);
+    check!(hit_sphere(V3::new(-1.5, 0.55, 1.5), 0.55, ray, closest), 6);
+    check!(hit_sphere(V3::new(0.2, 0.35, 1.9), 0.35, ray, closest), 7);
+    check!(hit_sphere(V3::new(-3.0, 0.3, 1.4), 0.3, ray, closest), 16);
+    // Boxes (metal pillar + diffuse riser)
     check!(
-        hit_sphere(V3::new(1.85, 0.35, -1.15), 0.35, ray, closest),
-        8
+        hit_box(
+            V3::new(-3.2, 0.0, -2.4),
+            V3::new(-2.4, 2.2, -1.6),
+            ray,
+            closest
+        ),
+        14
     );
-    // Floating accent sphere
     check!(
-        hit_sphere(V3::new(-0.25, 1.55, 1.35), 0.25, ray, closest),
-        4
+        hit_box(V3::new(2.0, 0.0, 1.4), V3::new(2.8, 0.5, 2.2), ray, closest),
+        15
     );
     let _ = closest;
-
     result
+}
+
+fn hit_box(bmin: V3, bmax: V3, ray: &Ray, t_max: f32) -> Option<(f32, V3, bool)> {
+    let inv = V3::new(1.0 / ray.d.x, 1.0 / ray.d.y, 1.0 / ray.d.z);
+    let t0 = (bmin - ray.o) * inv;
+    let t1 = (bmax - ray.o) * inv;
+    let tsmall = V3::new(t0.x.min(t1.x), t0.y.min(t1.y), t0.z.min(t1.z));
+    let tbig = V3::new(t0.x.max(t1.x), t0.y.max(t1.y), t0.z.max(t1.z));
+    let tn = tsmall.x.max(tsmall.y).max(tsmall.z);
+    let tf = tbig.x.min(tbig.y).min(tbig.z);
+    if tn > tf || tf < EPS {
+        return None;
+    }
+    let (t, on_far) = if tn < EPS { (tf, true) } else { (tn, false) };
+    if t < EPS || t > t_max {
+        return None;
+    }
+    let mut n = if !on_far {
+        if tn == tsmall.x {
+            V3::new(-ray.d.x.signum(), 0.0, 0.0)
+        } else if tn == tsmall.y {
+            V3::new(0.0, -ray.d.y.signum(), 0.0)
+        } else {
+            V3::new(0.0, 0.0, -ray.d.z.signum())
+        }
+    } else if tf == tbig.x {
+        V3::new(ray.d.x.signum(), 0.0, 0.0)
+    } else if tf == tbig.y {
+        V3::new(0.0, ray.d.y.signum(), 0.0)
+    } else {
+        V3::new(0.0, 0.0, ray.d.z.signum())
+    };
+    let front = ray.d.dot(n) < 0.0;
+    if !front {
+        n = -n;
+    }
+    Some((t, n, front))
+}
+
+fn checker(p: V3) -> V3 {
+    let ix = (p.x * 0.7).floor() as i32;
+    let iz = (p.z * 0.7).floor() as i32;
+    if (ix + iz) & 1 == 0 {
+        V3::new(0.82, 0.80, 0.76)
+    } else {
+        V3::new(0.18, 0.19, 0.22)
+    }
+}
+
+// Next event estimation: sample the ceiling area light directly.
+fn sample_light(p: V3, n: V3, rng: &mut Rng) -> V3 {
+    let q = V3::new(-1.3, 5.6 - 0.02, -0.9)
+        + V3::new(2.6, 0.0, 0.0) * rng.f32()
+        + V3::new(0.0, 0.0, 1.8) * rng.f32();
+    let to = q - p;
+    let dist2 = to.dot(to);
+    let dist = dist2.sqrt();
+    let wi = to * (1.0 / dist);
+    let cos_s = n.dot(wi);
+    let cos_l = V3::new(0.0, -1.0, 0.0).dot(-wi);
+    if cos_s <= 0.0 || cos_l <= 0.0 {
+        return V3::splat(0.0);
+    }
+    let shadow = Ray {
+        o: p + n * EPS,
+        d: wi,
+    };
+    match trace_scene(&shadow) {
+        Some(h) if h.mat_id == 3 => {
+            let g = (cos_s * cos_l) / dist2;
+            V3::new(18.0, 16.2, 12.6) * (g * 4.68 / std::f32::consts::PI)
+        }
+        _ => V3::splat(0.0),
+    }
 }
 
 // ---- Fresnel ----
@@ -441,6 +556,7 @@ fn path_trace(primary: &Ray, rng: &mut Rng) -> (V3, u32) {
     let mut throughput = V3::splat(1.0);
     let mut radiance = V3::splat(0.0);
     let mut rays = 0u32;
+    let mut specular = true;
 
     for bounce in 0..MAX_BOUNCE {
         rays = rays.wrapping_add(1);
@@ -451,18 +567,28 @@ fn path_trace(primary: &Ray, rng: &mut Rng) -> (V3, u32) {
 
         let mat = get_mat(hit.mat_id);
 
-        // Emissive
+        // Emissive: main light (id 3) is covered by NEE on diffuse paths, so only
+        // add it directly on specular/camera arrival to avoid double counting.
         if mat.kind == 3 {
-            radiance = radiance + throughput * mat.albedo * mat.param;
+            if specular || hit.mat_id != 3 {
+                radiance = radiance + throughput * mat.albedo * mat.param;
+            }
             break;
         }
 
         match mat.kind {
             0 => {
-                // Diffuse
+                // Diffuse + direct light sampling
+                let albedo = if hit.mat_id == 9 {
+                    checker(hit.pos)
+                } else {
+                    mat.albedo
+                };
+                radiance = radiance + throughput * albedo * sample_light(hit.pos, hit.normal, rng);
                 ray.o = hit.pos + hit.normal * EPS;
                 ray.d = rng.cos_hemisphere(hit.normal);
-                throughput = throughput * mat.albedo;
+                throughput = throughput * albedo;
+                specular = false;
             }
             1 => {
                 // Metal
@@ -476,6 +602,7 @@ fn path_trace(primary: &Ray, rng: &mut Rng) -> (V3, u32) {
                     break;
                 }
                 throughput = throughput * mat.albedo;
+                specular = true;
             }
             2 => {
                 // Dielectric
@@ -486,7 +613,7 @@ fn path_trace(primary: &Ray, rng: &mut Rng) -> (V3, u32) {
                 };
                 let unit = ray.d.norm();
                 let cos_theta = (-unit).dot(hit.normal).min(1.0);
-                let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+                let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
                 let cannot_refract = ratio * sin_theta > 1.0;
                 let should_reflect = schlick(cos_theta, ratio) > rng.f32();
 
@@ -496,6 +623,7 @@ fn path_trace(primary: &Ray, rng: &mut Rng) -> (V3, u32) {
                     ray.d = unit.refract(hit.normal, ratio);
                 }
                 ray.o = hit.pos + ray.d * EPS;
+                specular = true;
             }
             _ => break,
         }
@@ -529,7 +657,7 @@ struct Camera {
 
 fn build_camera(w: u32, h: u32, yaw: f32, pitch: f32) -> Camera {
     let aspect = w as f32 / h as f32;
-    let fov_scale = (50.0_f32.to_radians() * 0.5).tan();
+    let fov_scale = (62.0_f32.to_radians() * 0.5).tan();
     let target = V3::new(0.0, 2.0, 0.0);
     let dist = 9.5;
     let eye = target
@@ -684,6 +812,11 @@ impl State {
         let y = (idx as u32) / self.render_w;
         let ray = make_ray(x, y, camera, &mut rng);
         let (color, rays) = path_trace(&ray, &mut rng);
+        let color = V3::new(
+            color.x.min(FIREFLY_CLAMP),
+            color.y.min(FIREFLY_CLAMP),
+            color.z.min(FIREFLY_CLAMP),
+        );
         self.rng_states[idx] = rng.0;
 
         let spp = self.sample_counts[idx] + 1;
